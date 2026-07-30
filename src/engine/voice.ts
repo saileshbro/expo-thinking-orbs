@@ -187,18 +187,6 @@ const BODY_WOBBLE = 0.55;
 const BODY_WOBBLE_MAX = 0.038;
 
 /**
- * Per-ring drift: how far a ring's own oscillator can turn it, in radians.
- *
- * The smallest of the four shear terms on purpose. This is the one whose
- * neighbours genuinely disagree — the other three vary smoothly with ring index
- * — so it is the term that would shred the shell into slats if it were loud.
- */
-const RING_DRIFT_AMP = 0.07;
-/** Slowest and fastest per-ring rate: periods of roughly 125 and 25 clock units. */
-const RING_DRIFT_W_MIN = 0.05;
-const RING_DRIFT_W_MAX = 0.26;
-
-/**
  * The hop's height, in units of `size`.
  *
  * Small because the CANVAS is the budget, not taste: the shell already reaches
@@ -567,28 +555,11 @@ function ringState(
   // Ring index is lattice position, so decoupling by ring is the strongest
   // legitimate decoupling available.
   const eq = 1 - sinLat * sinLat;
-  // The fourth term gives every ring its OWN slow oscillator, at a rate and a
-  // starting phase hashed off the ring index. Each one sweeps from one extreme
-  // through zero to the other and back — a ring creeps one way, slows, stops and
-  // creeps back — and because no two rings share a rate, they drift into and out
-  // of agreement over minutes instead of repeating on a common beat. That
-  // wandering disagreement IS the twisting: at any moment some bands are turning
-  // one way, some the other, and some are momentarily still.
-  //
-  // The rates are deliberately slow (periods of roughly 25 to 125 clock units).
-  // A fast per-ring rate is what would turn a surface into slats: neighbours have
-  // to disagree gently enough that the eye still reads one skin being wrung,
-  // which is rule 2 at the top of this file. Hashing by RING is as far as that
-  // rule can be pushed — within a ring every dot still shares a phase exactly.
-  const ringRate =
-    RING_DRIFT_W_MIN + hashD(ri, 5.37) * (RING_DRIFT_W_MAX - RING_DRIFT_W_MIN);
-  const ringPhase = TAU * hashD(ri, 9.11);
   out[2] =
     eq *
     (0.085 * Math.sin(ti * 0.42 + ri * 0.77) +
       0.05 * Math.sin(ti * 0.2571 - ri * 1.31) +
-      0.035 * Math.sin(ri * 0.9) * Math.sin(ti * 0.1733) +
-      RING_DRIFT_AMP * Math.sin(ti * ringRate + ringPhase));
+      0.035 * Math.sin(ri * 0.9) * Math.sin(ti * 0.1733));
   out[3] = 1;
 
   // ...and on top, one of idle's gestures. Only the two per-RING ones are

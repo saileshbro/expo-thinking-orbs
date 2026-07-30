@@ -180,53 +180,13 @@ const check = (name: string, ok: boolean, detail = '') => {
 //    in it must be a sine, and the total has to stay a twist rather than a
 //    shredding.
 {
-  const RING_DRIFT_AMP = 0.07;
-  const worst = 0.085 + 0.05 + 0.035 + RING_DRIFT_AMP + 0.16; /* twist gust */
+  const worst = 0.085 + 0.05 + 0.035 + 0.16; /* twist gust */
   const deg = (worst * 180) / Math.PI;
   check(
     'twist stays bounded and sane',
     worst < 0.45,
     `max ${worst.toFixed(3)} rad (${deg.toFixed(1)}°)`
   );
-}
-
-// 8b. The per-ring drift actually decouples the rings: their rates must differ
-//     enough that they do not fall back onto a common beat, and must stay slow
-//     enough that neighbours still read as one surface rather than as slats.
-{
-  const RING_DRIFT_W_MIN = 0.05;
-  const RING_DRIFT_W_MAX = 0.26;
-  const RINGS = 18;
-  const rates: number[] = [];
-  for (let ri = 0; ri < RINGS; ri++) {
-    rates.push(
-      RING_DRIFT_W_MIN + hashD(ri, 5.37) * (RING_DRIFT_W_MAX - RING_DRIFT_W_MIN)
-    );
-  }
-  const spread = Math.max(...rates) - Math.min(...rates);
-  check(
-    'ring drift rates are spread, not clustered',
-    spread > (RING_DRIFT_W_MAX - RING_DRIFT_W_MIN) * 0.6,
-    `spread ${spread.toFixed(3)} of ${(RING_DRIFT_W_MAX - RING_DRIFT_W_MIN).toFixed(3)}`
-  );
-
-  // Neighbours: the largest rate gap between ADJACENT rings decides whether the
-  // shell reads as a skin being wrung or as independent slats.
-  let worstGap = 0;
-  for (let i = 1; i < rates.length; i++) {
-    worstGap = Math.max(worstGap, Math.abs(rates[i]! - rates[i - 1]!));
-  }
-  check(
-    'adjacent rings stay within a gentle rate gap',
-    worstGap < 0.24,
-    `worst neighbour gap ${worstGap.toFixed(3)} rad/unit`
-  );
-
-  // Slowest and fastest sweep, reported for tuning: this is the "-1 to +1 and
-  // back" the drift is meant to feel like.
-  const slow = (TAU / Math.min(...rates)).toFixed(0);
-  const fast = (TAU / Math.max(...rates)).toFixed(0);
-  console.log(`      (ring sweep periods ${fast}-${slow} clock units)`);
 }
 
 // 9. The swarm's contraction returns to exactly 1. A gesture that left the shell
