@@ -64,8 +64,16 @@ export {
   type Resolved,
 } from './presets';
 export { MODES } from './engine/registry';
-export { acquireDotBuffer, type DotBuffer } from './engine/scratch';
+export {
+  acquireDotBuffer,
+  acquireDotBufferB,
+  type DotBuffer,
+} from './engine/scratch';
 export { recordPicture } from './engine/paint';
+// Interpolate two built clouds into one pose — what a state change runs
+// through, and what a consumer driving its own build → record loop needs in
+// order to change state without a cut.
+export { blendDots } from './engine/blend';
 // The band-reactive pass, for consumers running their own build → record
 // loop: call it on the filled buffer before recording.
 export { applyVoicePass } from './engine/voice-pass';

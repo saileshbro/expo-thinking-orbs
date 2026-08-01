@@ -42,8 +42,28 @@ export interface DotBuffer {
 
 interface ScratchGlobal {
   __expoThinkingOrbsScratch?: DotBuffer;
+  __expoThinkingOrbsScratchB?: DotBuffer;
+  __expoThinkingOrbsScratchC?: DotBuffer;
   __expoThinkingOrbsDyn?: ModeDynamics;
   __expoThinkingOrbsMat?: number[];
+  __expoThinkingOrbsOrient?: [Float32Array, Float32Array];
+}
+
+/**
+ * One of two shared `[yaw, pitch]` pairs, for the blend's orientation lock
+ * — it reads both modes' orientations for a frame and needs somewhere to
+ * put them that costs no allocation. `slot` is 0 or 1; the two are read
+ * together, so they cannot share one.
+ */
+export function acquireOrient(slot: 0 | 1): Float32Array {
+  'worklet';
+  const g = globalThis as ScratchGlobal;
+  let o = g.__expoThinkingOrbsOrient;
+  if (o === undefined) {
+    o = [new Float32Array(2), new Float32Array(2)];
+    g.__expoThinkingOrbsOrient = o;
+  }
+  return o[slot];
 }
 
 /**
@@ -102,6 +122,20 @@ export function acquireDynamics(
   return d;
 }
 
+function makeBuffer(capacity: number): DotBuffer {
+  'worklet';
+  return {
+    xs: new Float32Array(capacity),
+    ys: new Float32Array(capacity),
+    zs: new Float32Array(capacity),
+    rs: new Float32Array(capacity),
+    ws: new Float32Array(capacity),
+    as: new Float32Array(capacity),
+    count: 0,
+    capacity,
+  };
+}
+
 /**
  * Return the runtime's shared {@linkcode DotBuffer}, grown to at least
  * `capacity` dots, with `count` reset to 0. Callable from both the React
@@ -112,17 +146,54 @@ export function acquireDotBuffer(capacity: number): DotBuffer {
   const g = globalThis as ScratchGlobal;
   let buf = g.__expoThinkingOrbsScratch;
   if (buf === undefined || buf.capacity < capacity) {
-    buf = {
-      xs: new Float32Array(capacity),
-      ys: new Float32Array(capacity),
-      zs: new Float32Array(capacity),
-      rs: new Float32Array(capacity),
-      ws: new Float32Array(capacity),
-      as: new Float32Array(capacity),
-      count: 0,
-      capacity,
-    };
+    buf = makeBuffer(capacity);
     g.__expoThinkingOrbsScratch = buf;
+  }
+  buf.count = 0;
+  return buf;
+}
+
+/**
+ * The SECOND shared dot buffer, on its own `globalThis` slot. Exists for
+ * one caller: a state blend evaluates two modes for the same frame, so the
+ * outgoing pose needs somewhere to live that the incoming build will not
+ * overwrite.
+ *
+ * Same reuse contract as {@linkcode acquireDotBuffer} — valid until the
+ * next call, which is safe because a build → blend → record pass completes
+ * atomically before the UI runtime yields. Callers that never blend never
+ * touch this, so a single-state orb still allocates exactly one buffer per
+ * runtime.
+ */
+export function acquireDotBufferB(capacity: number): DotBuffer {
+  'worklet';
+  const g = globalThis as ScratchGlobal;
+  let buf = g.__expoThinkingOrbsScratchB;
+  if (buf === undefined || buf.capacity < capacity) {
+    buf = makeBuffer(capacity);
+    g.__expoThinkingOrbsScratchB = buf;
+  }
+  buf.count = 0;
+  return buf;
+}
+
+/**
+ * The THIRD shared dot buffer — where a blend writes its result.
+ *
+ * It cannot write back over one of its inputs. Position-matched pairing
+ * lets an output dot read a source index ABOVE its own, so writing in place
+ * would overwrite poses the loop had yet to read, and dots would smear
+ * along whatever an earlier iteration happened to leave behind. Ordering
+ * the loop cannot fix it: with an arbitrary matching there is no direction
+ * that reads only untouched slots.
+ */
+export function acquireDotBufferC(capacity: number): DotBuffer {
+  'worklet';
+  const g = globalThis as ScratchGlobal;
+  let buf = g.__expoThinkingOrbsScratchC;
+  if (buf === undefined || buf.capacity < capacity) {
+    buf = makeBuffer(capacity);
+    g.__expoThinkingOrbsScratchC = buf;
   }
   buf.count = 0;
   return buf;

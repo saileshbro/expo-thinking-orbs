@@ -79,6 +79,14 @@ export function precomputeRibbon(o: ModeOpts): RibbonData {
   };
 }
 
+// Mirrors the `makeProj` call in `buildRibbon` — see `ModeOrient`. The
+// shipped presets set `spin: 0`, so this is usually a fixed pose.
+export function orientRibbon(t: number, o: ModeOpts, out: Float32Array): void {
+  'worklet';
+  out[0] = t * 0.1 * (o.spin ?? 1);
+  out[1] = 0.3;
+}
+
 export function buildRibbon(
   buf: DotBuffer,
   size: number,

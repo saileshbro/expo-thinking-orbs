@@ -127,6 +127,12 @@ interface LatticeData extends ModeStaticData {
   uz: Float64Array;
   /** Longitude angle per dot — the globe scan needs it. */
   lon: Float64Array;
+  /**
+   * Latitude per dot. Not used by any mode's own drawing — it is carried
+   * so a state blend can pair this cloud with another lattice by position;
+   * see {@linkcode ModeStaticData.lat}.
+   */
+  lat: Float64Array;
 }
 
 function buildLattice(rings: number, lonDensity: number): LatticeData {
@@ -134,6 +140,7 @@ function buildLattice(rings: number, lonDensity: number): LatticeData {
   const uy: number[] = [];
   const uz: number[] = [];
   const lonArr: number[] = [];
+  const latArr: number[] = [];
   for (let li = 0; li <= rings; li++) {
     const lat = -Math.PI / 2 + (li / rings) * Math.PI;
     const cosLat = Math.cos(lat);
@@ -145,6 +152,7 @@ function buildLattice(rings: number, lonDensity: number): LatticeData {
       uy.push(sinLat);
       uz.push(cosLat * Math.sin(lon));
       lonArr.push(lon);
+      latArr.push(lat);
     }
   }
   return {
@@ -152,6 +160,7 @@ function buildLattice(rings: number, lonDensity: number): LatticeData {
     uy: Float64Array.from(uy),
     uz: Float64Array.from(uz),
     lon: Float64Array.from(lonArr),
+    lat: Float64Array.from(latArr),
     dotCount: ux.length,
   };
 }
@@ -162,6 +171,13 @@ export interface GlobeData extends LatticeData {}
 
 export function precomputeGlobe(o: ModeOpts): GlobeData {
   return buildLattice(o.latRings ?? 17, o.lonDensity ?? 44);
+}
+
+// Mirrors the `makeProj` call in `buildGlobe` — see `ModeOrient`.
+export function orientGlobe(t: number, _o: ModeOpts, out: Float32Array): void {
+  'worklet';
+  out[0] = t * 0.5;
+  out[1] = 0.4 + 0.06 * Math.sin(t * 0.35);
 }
 
 export function buildGlobe(
@@ -235,6 +251,13 @@ export interface RubikData extends LatticeData {
 export function precomputeRubik(o: ModeOpts): RubikData {
   const lattice = buildLattice(o.latRings ?? 15, o.lonDensity ?? 40);
   return { ...lattice, moves: makeMoves(o.moveCount ?? 14) };
+}
+
+// Mirrors the `makeProj` call in `buildRubik` — see `ModeOrient`.
+export function orientRubik(t: number, _o: ModeOpts, out: Float32Array): void {
+  'worklet';
+  out[0] = t * 0.55;
+  out[1] = 0.35 + 0.1 * Math.sin(t * 0.9);
 }
 
 export function buildRubik(
@@ -311,6 +334,12 @@ export function precomputeWave(o: ModeOpts): WaveData {
   const rings = o.rings ?? 15;
   const lonDensity = o.lonDensity ?? 40;
   const out: WaveRing[] = [];
+  // Flat per-dot lat/lon in the order `buildWave` emits (ring-major,
+  // longitude ascending) — carried only so a blend can pair this cloud with
+  // another lattice by position. Kept in lockstep with the loop below; if
+  // the emission order ever changes, these must change with it.
+  const latArr: number[] = [];
+  const lonArr: number[] = [];
   let dotCount = 0;
   for (let ri = 0; ri <= rings; ri++) {
     const lat = -Math.PI / 2 + (ri / rings) * Math.PI;
@@ -323,11 +352,25 @@ export function precomputeWave(o: ModeOpts): WaveData {
       const lon = (lj / lonCount) * 2 * Math.PI;
       cosLon[lj] = Math.cos(lon);
       sinLon[lj] = Math.sin(lon);
+      latArr.push(lat);
+      lonArr.push(lon);
     }
     out.push({ sinLat, cosLat, cosLon, sinLon });
     dotCount += lonCount;
   }
-  return { rings: out, dotCount };
+  return {
+    rings: out,
+    dotCount,
+    lat: Float64Array.from(latArr),
+    lon: Float64Array.from(lonArr),
+  };
+}
+
+// Mirrors the `makeProj` call in `buildWave` — see `ModeOrient`.
+export function orientWave(t: number, _o: ModeOpts, out: Float32Array): void {
+  'worklet';
+  out[0] = t * 0.18;
+  out[1] = 0.38;
 }
 
 export function buildWave(

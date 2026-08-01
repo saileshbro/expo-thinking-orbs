@@ -8,7 +8,7 @@
 // Skia view is a separate hardware-buffer surface composited per frame,
 // so fewer, larger canvases render dramatically cheaper.
 
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { SkPicture } from '@shopify/react-native-skia';
 import {
   useDerivedValue,
@@ -20,19 +20,24 @@ import {
   type SharedValue,
 } from 'react-native-reanimated';
 import { buildColorLUT } from './colors';
+import { blendDots } from './engine/blend';
 import { recordPicture } from './engine/paint';
-import { MODES } from './engine/registry';
+import { MODES, precomputeCached } from './engine/registry';
 import { quatToMat3 } from './engine/core';
 import {
   acquireDotBuffer,
+  acquireDotBufferB,
+  acquireDotBufferC,
   acquireDynamics,
   acquireMat3,
+  acquireOrient,
 } from './engine/scratch';
+import { correspondenceFor } from './engine/correspondence';
 import { applyVoicePass } from './engine/voice-pass';
 import type { VoiceBehaviour } from './engine/voice';
 import { pickDesignSize, resolvePreset, resolveVoicePreset } from './presets';
 import { useResolvedDark } from './theme';
-import type { OrbBands, ThinkingOrbProps } from './types';
+import type { OrbBands, OrbState, ThinkingOrbProps } from './types';
 
 // Cap the per-frame delta so a pause/resume or a dropped-frame hitch
 // advances the phase by at most a few frames instead of the whole gap —
@@ -170,6 +175,29 @@ export type UseThinkingOrbPictureOptions = Omit<
 const BLEND_MS = 280;
 
 /**
+ * How long a STATE change takes to travel, in ms — the six ported states,
+ * not the voice behaviours above.
+ *
+ * Slower than {@linkcode BLEND_MS} on purpose. A voice blend is one shell
+ * relaxing into a new behaviour during a conversation, where lagging the
+ * turn is the worse failure. This one carries every dot from one geometry
+ * to a different one — orbits to a rubik lattice — along paths that are
+ * long because the two emission orders have nothing to do with each other.
+ * Rushed, that reads as a scramble; given time, it reads as the cloud
+ * rearranging itself, which is the point.
+ */
+const STATE_BLEND_MS = 560;
+
+/** One turn in radians, for wrapping the orientation lock's yaw delta. */
+const TAU = Math.PI * 2;
+
+/** The two states a blend is travelling between; equal when settled. */
+interface StatePair {
+  from: OrbState;
+  to: OrbState;
+}
+
+/**
  * Drive one orb's animation and return its per-frame Skia picture. The
  * picture is recorded with bounds `(0, 0, size, size)`; draw it in a
  * `<Picture>`, offset with a `<Group transform={...}>` when composing
@@ -197,19 +225,75 @@ export function useThinkingOrbPicture({
 }: UseThinkingOrbPictureOptions = {}): DerivedValue<SkPicture> {
   const designSize = pickDesignSize(size);
   const isVoice = voice != null;
-  const resolved = useMemo(
+
+  // The two states the cloud is travelling between. Equal outside a blend,
+  // and `resolvePreset` is cached, so `from === to` then yields the very
+  // same object — which is exactly the test the single-build fast path in
+  // the render loop uses.
+  const [pair, setPair] = useState<StatePair>({ from: state, to: state });
+  // Mirrors `pair` for the state-change effect, which needs the CURRENT
+  // pair without listing it as a dependency: `from` is chosen from the
+  // blend position at the moment of the change, so re-running the effect
+  // when the pair it just set lands would restart the blend it started.
+  const pairRef = useRef(pair);
+  /** Blend position, 0 = fully `pair.from`, 1 = fully `pair.to`. */
+  const stateMix = useSharedValue(1);
+
+  const resolvedTo = useMemo(
     () =>
       isVoice
         ? resolveVoicePreset(designSize)
-        : resolvePreset(state, designSize),
-    [isVoice, state, designSize]
+        : resolvePreset(pair.to, designSize),
+    [isVoice, pair.to, designSize]
   );
-  const mode = resolved.mode;
-  const opts = resolved.opts;
-  const rMin = opts.rMin ?? 0.3;
+  const resolvedFrom = useMemo(
+    () =>
+      isVoice
+        ? resolveVoicePreset(designSize)
+        : resolvePreset(pair.from, designSize),
+    [isVoice, pair.from, designSize]
+  );
+  // Reference inequality IS the blend flag, by the caching contract above.
+  // The voice shell never takes this path: its states are behaviours on one
+  // profile that `buildVoice` already blends per dot, so dual-evaluating it
+  // would pay for a second build to interpolate a pose against itself.
+  const blending = resolvedFrom !== resolvedTo;
 
-  const build = MODES[mode].build;
-  const staticData = useMemo(() => MODES[mode].precompute(opts), [mode, opts]);
+  const optsTo = resolvedTo.opts;
+  const optsFrom = resolvedFrom.opts;
+  const rMinTo = optsTo.rMin ?? 0.3;
+  const rMinFrom = optsFrom.rMin ?? 0.3;
+
+  const buildTo = MODES[resolvedTo.mode].build;
+  const buildFrom = MODES[resolvedFrom.mode].build;
+  // Absent for `morph`, which never projects — the lock then does nothing,
+  // which is correct: a flat outline has no orientation to reconcile.
+  const orientTo = MODES[resolvedTo.mode].orient;
+  const orientFrom = MODES[resolvedFrom.mode].orient;
+  const staticTo = useMemo(
+    () => precomputeCached(resolvedTo.mode, optsTo),
+    [resolvedTo.mode, optsTo]
+  );
+  // Only precomputed when the two halves genuinely differ. Two unconditional
+  // memos would build the SAME tables twice on every mount and keep both
+  // resident — including for every `VoiceOrb`, which resolves one cached
+  // preset and so can never blend this way. Outside a blend this aliases
+  // `staticTo`, which is exactly right: one dataset, one build.
+  const staticFromOwn = useMemo(
+    () =>
+      resolvedFrom === resolvedTo
+        ? null
+        : precomputeCached(resolvedFrom.mode, optsFrom),
+    [resolvedFrom, resolvedTo, optsFrom]
+  );
+  const staticFrom = staticFromOwn ?? staticTo;
+  // Which dot becomes which. Resolved once per pair of clouds and cached, so
+  // the position matching never runs on the state-change path — see
+  // `engine/correspondence.ts`.
+  const corr = useMemo(
+    () => correspondenceFor(staticFrom, staticTo),
+    [staticFrom, staticTo]
+  );
 
   const dark = useResolvedDark(theme);
   const lut = useMemo(() => buildColorLUT(dark, color), [dark, color]);
@@ -253,11 +337,18 @@ export function useThinkingOrbPicture({
   const qw = tilt?.orientation?.w;
   const reduced = useReducedMotion();
 
-  const effSpeed = resolved.speed * speed * (reduced ? REDUCED_SPEED : 1);
-  const effSpeedSV = useSharedValue(effSpeed);
+  // One clock per half of the blend. A single speed would advance the
+  // OUTGOING animation at the incoming state's tempo for the length of the
+  // blend, which reads as the old animation changing pace as it leaves.
+  const userSpeed = speed * (reduced ? REDUCED_SPEED : 1);
+  const effSpeedTo = resolvedTo.speed * userSpeed;
+  const effSpeedFrom = resolvedFrom.speed * userSpeed;
+  const effSpeedToSV = useSharedValue(effSpeedTo);
+  const effSpeedFromSV = useSharedValue(effSpeedFrom);
   useEffect(() => {
-    effSpeedSV.set(effSpeed);
-  }, [effSpeed, effSpeedSV]);
+    effSpeedToSV.set(effSpeedTo);
+    effSpeedFromSV.set(effSpeedFrom);
+  }, [effSpeedTo, effSpeedFrom, effSpeedToSV, effSpeedFromSV]);
 
   // Amplitude arrives either as a caller-owned SharedValue (driven at
   // frame rate from the UI thread) or as a plain number mirrored into our
@@ -331,24 +422,78 @@ export function useThinkingOrbPicture({
     mix.set(withTiming(1, { duration: BLEND_MS }));
   }, [voice, behFrom, behTo, mix]);
 
-  // -1 marks the phase as unseeded; the next active frame seeds it from
-  // the shared frame clock so instances mounted at different times lock.
-  // Keyed on the MODE, not the state: a voice behaviour change must not
-  // reset the clock, or the blend would jump.
-  const phase = useSharedValue(-1);
+  // One clock per half of the blend. -1 marks a clock as unseeded; the next
+  // active frame seeds it from the shared frame clock so instances mounted
+  // at different times lock.
+  //
+  // Neither is reset by a state change. `phaseTo` in particular runs
+  // unbroken for the component's whole life, because it is also the clock
+  // the colour drift and the voice pass read: reseeding it on every state
+  // change would jump the hue and the ripple at the exact moment the dots
+  // are supposed to be travelling smoothly. Only a design-size change,
+  // which is a resize and a discontinuity already, reseeds them.
+  const phaseTo = useSharedValue(-1);
+  const phaseFrom = useSharedValue(-1);
   useEffect(() => {
-    phase.set(-1);
-  }, [mode, designSize, phase]);
+    phaseTo.set(-1);
+    phaseFrom.set(-1);
+  }, [isVoice, designSize, phaseTo, phaseFrom]);
+
+  // State blending. Unlike the voice blend above — one shell, two behaviour
+  // indices, interpolated inside `buildVoice` — the six states are six
+  // different mode implementations, so the blend happens on their OUTPUTS
+  // (`engine/blend.ts`) and both halves need their own preset and clock.
+  useEffect(() => {
+    if (isVoice) return;
+    const p = pairRef.current;
+    if (p.to === state) return;
+    // Same rule, and the same caveat, as the voice blend: a change arriving
+    // mid-blend cannot resume from the pose on screen, because that pose is
+    // a lerp of two states and `from` can only name one of them. Starting
+    // from whichever endpoint it is nearer halves the worst-case jump.
+    const takeTo = stateMix.get() >= 0.5;
+    // The outgoing half inherits the clock the incoming one has been
+    // running, so the state being left behind keeps animating from the pose
+    // it was actually in rather than restarting.
+    if (takeTo) phaseFrom.set(phaseTo.get());
+    const next: StatePair = { from: takeTo ? p.to : p.from, to: state };
+    pairRef.current = next;
+    setPair(next);
+  }, [isVoice, state, stateMix, phaseFrom, phaseTo]);
+
+  // The travel is started SEPARATELY, keyed on the pair, so it begins on the
+  // render that installs the new builders rather than the one that asks for
+  // them. Starting it alongside `setPair` above ran the clock through
+  // React's render and commit: the first thing drawn was already part-way
+  // through the blend, and with a long commit most of the travel had
+  // happened before anything could show it — the change read as a stutter
+  // followed by a late, truncated move.
+  useEffect(() => {
+    if (pair.from === pair.to) {
+      // Nothing to travel — a toggle that landed back on the state it came
+      // from. Park the mix at the end so the "nearer endpoint" test above
+      // reads a settled blend rather than a stale mid-flight value.
+      stateMix.set(1);
+      return;
+    }
+    stateMix.set(0);
+    stateMix.set(withTiming(1, { duration: STATE_BLEND_MS }));
+  }, [pair, stateMix]);
 
   const frame = useFrameCallback((info) => {
     'worklet';
-    if (phase.get() < 0) {
-      phase.set((info.timestamp / 1000) * effSpeedSV.get());
-      return;
-    }
     let dt = info.timeSincePreviousFrame ?? 0;
     if (dt > MAX_DT_MS) dt = MAX_DT_MS;
-    phase.set(phase.get() + (dt / 1000) * effSpeedSV.get());
+    const now = info.timestamp / 1000;
+    const step = dt / 1000;
+    // Seeding no longer returns early: `phaseFrom` can be seeded mid-life
+    // by a state change, and skipping the amplitude filter for that frame
+    // would stall the voice level on exactly the transitions it smooths.
+    // The first frame carries dt 0, so the filter below is a no-op there.
+    if (phaseTo.get() < 0) phaseTo.set(now * effSpeedToSV.get());
+    else phaseTo.set(phaseTo.get() + step * effSpeedToSV.get());
+    if (phaseFrom.get() < 0) phaseFrom.set(now * effSpeedFromSV.get());
+    else phaseFrom.set(phaseFrom.get() + step * effSpeedFromSV.get());
 
     const cur = level.get();
     // Losing the source is a target of 0, not an assignment of 0. Every
@@ -389,10 +534,16 @@ export function useThinkingOrbPicture({
     frame.setActive(!paused);
   }, [paused, frame]);
 
-  const dotCount = staticData.dotCount;
+  // Sized for the LARGER of the two clouds: the blend carries
+  // `max(nFrom, nTo)` dots so neither pose arrives thinned out, and both
+  // buffers are acquired at that capacity so the in-place lerp has room.
+  const dotCount =
+    staticFrom.dotCount > staticTo.dotCount
+      ? staticFrom.dotCount
+      : staticTo.dotCount;
 
   return useDerivedValue(() => {
-    const t = Math.max(0, phase.get());
+    const t = Math.max(0, phaseTo.get());
     // Dot weight for THIS frame. Floored just above zero rather than clamped to
     // a design range: a caller animating it is free to choose the range, but a 0
     // would make every dot vanish into the `rMin` floor and read as the orb
@@ -410,6 +561,10 @@ export function useThinkingOrbPicture({
     // REDUCED_AMP.
     const amp = reduced ? REDUCED_AMP : level.get();
     const buf = acquireDotBuffer(dotCount);
+    // Where the finished cloud ends up: the single build writes straight
+    // into `buf`, a blend produces its own buffer. Everything downstream
+    // reads this one.
+    let pose = buf;
     // Blends run under reduced motion too. `mix` is driven by withTiming,
     // independently of the frame callback, and cutting between behaviours
     // instead would be a harder visual event than the travel it replaces.
@@ -437,7 +592,75 @@ export function useThinkingOrbPicture({
         : quatToMat3(qx.get(), qy.get(), qz.get(), qw.get(), acquireMat3()),
       rMul
     );
-    build(buf, size, t, opts, staticData, dyn);
+    // Blend position for this frame. Pinned to 1 whenever the two halves
+    // resolve to the same preset, which is every frame outside a state
+    // change — so a settled orb runs exactly one build, as it always did.
+    let m = 1;
+    if (blending) {
+      const sm = stateMix.get();
+      m = !(sm > 0) ? 0 : sm > 1 ? 1 : sm;
+    }
+    if (m >= 1) {
+      buildTo(buf, size, t, optsTo, staticTo, dyn);
+    } else {
+      const tFrom = Math.max(0, phaseFrom.get());
+      // ORIENTATION LOCK. The blend interpolates projected screen points,
+      // which is only meaningful if both clouds were drawn looking at the
+      // orb from the same angle. Otherwise a dot sits on opposite sides in
+      // the two poses, the straight line between them passes through the
+      // middle, and the shell collapses into tiers — `globe` spins at
+      // `t*0.5` against `wave`'s `t*0.18`, so that pair collapsed hardest.
+      //
+      // Both halves are therefore pulled onto ONE orientation for the
+      // frame: the interpolated one. Each mode is nudged by the difference
+      // between that common angle and its own, which is zero at its own end
+      // of the blend — so neither cloud jumps as it takes over, and in
+      // between the two agree.
+      let lockYaw = 0;
+      let lockPitch = 0;
+      if (orientFrom != null && orientTo != null) {
+        const oa = acquireOrient(0);
+        const ob = acquireOrient(1);
+        orientFrom(tFrom, optsFrom, oa);
+        orientTo(t, optsTo, ob);
+        // Yaw grows without bound with elapsed time and the two modes run
+        // at very different rates, so the raw difference is routinely dozens
+        // of turns. Wrap it to the shorter way round, or the orb spins
+        // itself into a blur over the length of the blend.
+        let dYaw = ob[0]! - oa[0]!;
+        dYaw -= Math.round(dYaw / TAU) * TAU;
+        lockYaw = dYaw;
+        lockPitch = ob[1]! - oa[1]!;
+      }
+      // `from` turns TOWARD the common angle as the blend runs; `to` starts
+      // turned back from it by the same amount and unwinds. Added to
+      // whatever the caller is driving rather than replacing it, so a device
+      // tilt still applies throughout.
+      const baseYaw = dyn.yaw;
+      const basePitch = dyn.pitch;
+      dyn.yaw = baseYaw + lockYaw * m;
+      dyn.pitch = basePitch + lockPitch * m;
+      buildFrom(buf, size, tFrom, optsFrom, staticFrom, dyn);
+
+      dyn.yaw = baseYaw - lockYaw * (1 - m);
+      dyn.pitch = basePitch - lockPitch * (1 - m);
+      // Its own `globalThis` slot, so this build cannot overwrite the pose
+      // the one above just laid down.
+      const bufB = acquireDotBufferB(dotCount);
+      buildTo(bufB, size, t, optsTo, staticTo, dyn);
+
+      dyn.yaw = baseYaw;
+      dyn.pitch = basePitch;
+      // A third buffer: a position-matched pairing can read a source index
+      // above the one being written, so the result cannot go back over
+      // either input.
+      pose = acquireDotBufferC(corr.n);
+      blendDots(pose, buf, bufB, m, corr);
+    }
+    // The dot-radius floor rides the blend too — it is per-preset (the
+    // morph outline sits lower than the rest), so holding it at one
+    // endpoint would clamp the other's dots for the length of the travel.
+    const rMin = rMinFrom + (rMinTo - rMinFrom) * m;
     // The voice pass runs on the BUILT cloud, which is what lets it apply
     // to every mode rather than to the voice shell alone.
     //
@@ -453,7 +676,7 @@ export function useThinkingOrbPicture({
     if (reduced) {
       if (driven) {
         applyVoicePass(
-          buf,
+          pose,
           size,
           t,
           REDUCED_BANDS,
@@ -463,7 +686,7 @@ export function useThinkingOrbPicture({
       }
     } else {
       applyVoicePass(
-        buf,
+        pose,
         size,
         t,
         bandLow.get(),
@@ -492,7 +715,7 @@ export function useThinkingOrbPicture({
     // shrinking multiplier stops thinning the dots the moment they reach it,
     // which looks like the animation sticking partway.
     const pic = recordPicture(
-      buf,
+      pose,
       size,
       lut,
       rMin * rMul,
@@ -505,16 +728,28 @@ export function useThinkingOrbPicture({
     }
     return pic;
   }, [
-    build,
-    opts,
-    staticData,
+    // Both halves of the blend, in full. `ModeBuild` types its
+    // `staticData` as `any`, so a builder left paired with the other
+    // half's precomputed tables would not be caught by the compiler — it
+    // would read whatever fields happened to line up and draw nonsense.
+    buildTo,
+    buildFrom,
+    optsTo,
+    optsFrom,
+    staticTo,
+    staticFrom,
+    blending,
+    corr,
+    orientTo,
+    orientFrom,
     dotCount,
     lut,
     lutTo,
     colorSpread,
     colorCycleMs,
     size,
-    rMin,
+    rMinTo,
+    rMinFrom,
     reduced,
     debugFrameMs,
   ]);

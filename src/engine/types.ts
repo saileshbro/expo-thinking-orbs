@@ -25,6 +25,23 @@ export interface ModeStaticData {
    * resolved preset, so the {@linkcode DotBuffer} can be sized once.
    */
   dotCount: number;
+
+  /**
+   * Latitude and longitude per dot, in radians and in EMISSION order —
+   * `lat[i]` describes the dot the mode writes at index `i`.
+   *
+   * Optional, and only the lattice family (`globe`, `wave`, `rubik`) has
+   * them. They exist so a state blend can pair the two clouds by where
+   * their dots actually ARE rather than by index: those three are all
+   * ring-major sphere lattices, but at different ring counts and different
+   * dots per ring, so equal indices mean different places and a dot would
+   * cross the sphere for no visible reason. See `engine/correspondence.ts`.
+   *
+   * A mode whose dots are not on a sphere (`orbits`, `ribbon`, `morph`)
+   * leaves these out and falls back to proportional pairing.
+   */
+  lat?: Float64Array;
+  lon?: Float64Array;
 }
 
 /** Runs once per resolved preset, on the JS thread. */
@@ -119,7 +136,31 @@ export type ModeBuild = (
   dyn: ModeDynamics
 ) => void;
 
+/**
+ * The yaw and pitch a mode's own projection is at, at time `t` — written
+ * into `out` as `[yaw, pitch]` in radians rather than returned, so reading
+ * it every frame allocates nothing.
+ *
+ * It exists for ONE caller: the state blend, which draws two modes for the
+ * same frame and interpolates their output. Two modes at their own
+ * orientations put the same dot on opposite sides of the orb, and a
+ * straight line between those two points goes through the middle — the
+ * shell collapses (see `blend.ts`). Knowing each mode's orientation lets
+ * the blend cancel the difference and draw both at one common angle, which
+ * is what makes interpolating their projections legitimate at all.
+ *
+ * MUST mirror what the mode's `build` passes to {@linkcode makeProj}. The
+ * two are written next to each other for that reason; if they drift, blends
+ * into that mode quietly deform and nothing else breaks.
+ *
+ * Omitted by modes that do not project at all (`morph` draws a flat
+ * outline), for which the lock is a no-op.
+ */
+export type ModeOrient = (t: number, opts: ModeOpts, out: Float32Array) => void;
+
 export interface ModeImpl {
   precompute: ModePrecompute;
   build: ModeBuild;
+  /** See {@linkcode ModeOrient}. Absent for non-projecting modes. */
+  orient?: ModeOrient;
 }

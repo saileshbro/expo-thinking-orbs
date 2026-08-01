@@ -84,6 +84,17 @@ export function precomputeOrbits(o: ModeOpts): OrbitsData {
   };
 }
 
+// Mirrors the `makeProj` call in `buildOrbits` — see `ModeOrient`.
+export function orientOrbits(
+  _t: number,
+  _o: ModeOpts,
+  out: Float32Array
+): void {
+  'worklet';
+  out[0] = _t * 0.12;
+  out[1] = 0.3;
+}
+
 export function buildOrbits(
   buf: DotBuffer,
   size: number,
