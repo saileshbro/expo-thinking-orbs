@@ -60,9 +60,55 @@ export const VOICE_SPEAKING = 4;
 export const VOICE_CONNECTING = 5;
 export const VOICE_BUFFERING = 6;
 export const VOICE_DISCONNECTED = 7;
+/**
+ * Attending, without a session to attend to yet.
+ *
+ * `listening`'s pose — the inward gather — carried on `initializing`'s
+ * assembling sweep, at a third of its pace. It is the only behaviour built for
+ * a shell that is on screen indefinitely rather than for a moment in a call:
+ * `listening` alone goes slack when nobody speaks, and `initializing` alone is
+ * a progress bar that never finishes. Together they read as attention being
+ * held.
+ */
+export const VOICE_ATTUNING = 8;
 
-/** One of the eight voice shell behaviours. */
-export type VoiceBehaviour = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+/** One of the nine voice shell behaviours. */
+export type VoiceBehaviour = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+
+/**
+ * How much of this frame is behaviour `b`, `0`–`1`.
+ *
+ * The one expression that decides "is this state on screen right now, and by
+ * how much" — the shell is always somewhere between two behaviours, so a plain
+ * equality test would flicker anything gated on it across every transition.
+ */
+function behaviourWeight(
+  // Plain numbers, because `ModeDynamics` carries the behaviour untyped — the
+  // dynamics struct is shared with the six ported modes, where the field means
+  // something else entirely. `b` keeps the narrow type: it is the argument a
+  // caller can get wrong.
+  from: number,
+  to: number,
+  mix: number,
+  b: VoiceBehaviour
+): number {
+  'worklet';
+  return (from === b ? 1 - mix : 0) + (to === b ? mix : 0);
+}
+
+/**
+ * Attuning's dots, relative to every other behaviour's.
+ *
+ * `VOICE_PRESETS[64].size` is the shell's ORIGINAL 1.05, so the eight behaviours
+ * that were there before this one draw exactly the mark they always did. The
+ * heavier 1.15 attuning wants is applied here instead, per frame, faded in by
+ * attuning's own weight — 1.05 x 1.0952 = 1.15.
+ *
+ * It multiplies `rs` and NOT the `rMin` floor the painter clamps with, which is
+ * the one way this differs from having set 1.15 in the preset. Deliberate:
+ * `rMin` is an absolute readability floor, not a share of the mark.
+ */
+const ATTUNE_DOT_WEIGHT = 1.15 / 1.05;
 
 const TAU = Math.PI * 2;
 
@@ -397,6 +443,21 @@ function ringState(
     return;
   }
 
+  if (b === VOICE_ATTUNING) {
+    // Listening's ring pose, to the number. That is deliberate rather than
+    // lazy: attuning IS listening, and what separates them is the sweep added
+    // per dot in `buildVoice`, not the resting shape. Duplicating the pose
+    // rather than falling through keeps the two independently tunable, which
+    // is the point at which they will actually diverge.
+    out[0] = 0.9;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 1;
+    out[5] = -(0.05 + 0.17 * amp);
+    out[6] = 0.3 + 0.7 * amp;
+    return;
+  }
+
   if (b === VOICE_SPEAKING) {
     // Putting the voice OUT: the mirror gesture. Spikes lunge outward from
     // a shell that also swells slightly with the level, reaching wave's own
@@ -457,12 +518,20 @@ function ringState(
   }
 
   if (b === VOICE_INITIALIZING) {
-    // Coming online: a formation wave sweeping pole to pole. The ramp is a
+    // Coming online: a formation wave sweeping across the shell. The ramp is a
     // raised cosine, smooth at BOTH ends, so nothing ever jumps back to
     // scattered. Offsetting the phase by a full turn across the rings means
     // part of the shell is always assembled and part always arriving —
     // progressive assembly, not a repeated rebuild.
-    const form = 0.5 - 0.5 * Math.cos(TAU * (t / ASSEMBLE_PERIOD + ringT));
+    //
+    // The sweep also TURNS AROUND, every three passes. A wave that only ever
+    // travels one way reads as a mechanism running; one that comes back reads
+    // as something searching. Three passes rather than one because reversing
+    // on every pass is a stutter — the eye needs long enough to believe in the
+    // current direction before it is taken away.
+    const cycle = t / ASSEMBLE_PERIOD;
+    const dir = Math.floor(cycle / 3) % 2 === 0 ? 1 : -1;
+    const form = 0.5 - 0.5 * Math.cos(TAU * (cycle + dir * ringT));
     out[0] = WAVE_BASE + 0.02;
     // The dots that have landed arrive bigger and darker.
     out[1] = form * form;
@@ -778,6 +847,40 @@ export function buildVoice(
   // state is the overwhelmingly common one.
   const blending = mix < 1 && from !== to;
 
+  // THE SWEEP AXIS, resolved once per frame.
+  //
+  // `initializing`'s ring pose sweeps along LATITUDE, which on screen is a wave
+  // travelling up and down the globe. That is legible, but it is also the one
+  // direction that reads as a machine filling a progress bar — and it is the
+  // same direction every time, because latitude is fixed to the geometry.
+  //
+  // Here the sweep runs along an arbitrary axis instead, and that axis DRIFTS:
+  // `azI` turns steadily with a slow wobble on top, `latI` tips it. The result
+  // travels sideways, and arrives at a different angle on every pass without
+  // ever repeating on a period anyone can name. Per frame, not per dot — the
+  // dot loop below only takes a dot product against it.
+  const initW = behaviourWeight(from, to, mix, VOICE_INITIALIZING);
+  const attW = behaviourWeight(from, to, mix, VOICE_ATTUNING);
+  const sweeping = initW > 0 || attW > 0;
+  // Attuning's heavier mark, faded in with the behaviour itself. Exactly `rs`
+  // whenever attuning is not on screen, so the other eight draw the radius they
+  // drew before this behaviour existed — to the bit, not to a tolerance.
+  const rsDot = attW > 0 ? rs * (1 + (ATTUNE_DOT_WEIGHT - 1) * attW) : rs;
+  const cycleI = t / ASSEMBLE_PERIOD;
+  const dirI = Math.floor(cycleI / 3) % 2 === 0 ? 1 : -1;
+  // Attuning's own pass, a third of the pace and reversing on its own count.
+  // The two share an AXIS but not a clock: a blend between them then reads as
+  // one wave changing tempo rather than two waves crossing, which is the thing
+  // that would give away that there are two behaviours here at all.
+  const cycleA = t / (ASSEMBLE_PERIOD * 3);
+  const dirA = Math.floor(cycleA / 3) % 2 === 0 ? 1 : -1;
+  const azI = t * 0.11 + 1.7 * Math.sin(t * 0.037);
+  const latI = 0.5 * Math.sin(t * 0.043);
+  const clI = Math.cos(latI);
+  const saxI = clI * Math.cos(azI);
+  const sayI = Math.sin(latI);
+  const sazI = clI * Math.sin(azI);
+
   const p = new Float32Array(3);
   const xs = buf.xs;
   const ys = buf.ys;
@@ -877,6 +980,43 @@ export function buildVoice(
 
       let dr = rf;
       let dotCrest = crest;
+      // Per-dot copies, so the sweep can drive form and alpha off the dot's
+      // position along the axis rather than off its ring. The ring pose still
+      // sets the baseline; these carry the deviation from it, and stay equal to
+      // it whenever nothing is sweeping.
+      let dotAlpha = alpha;
+      let dotForm = form;
+      if (sweeping) {
+        // Where this dot sits along the sweep axis, -1 behind to +1 ahead. One
+        // dot product; the axis itself was built once per frame above.
+        const cAx = ux * saxI + sinLat * sayI + uz * sazI;
+        if (initW > 0) {
+          // INSIDE the branch, and it is worth a note because it was outside it
+          // and that cost real frames. `initializing` and `attuning` share this
+          // block, but `attuning` is a RESTING state — it is on screen the whole
+          // time the app is — so a `Math.cos` hoisted above the branch for
+          // `initializing`'s benefit ran once per dot per frame, forever, and
+          // its result was thrown away every time. Nothing is hoisted out of a
+          // per-dot loop here unless every arm uses it.
+          const f0 =
+            0.5 - 0.5 * Math.cos(TAU * (cycleI + dirI * (0.5 - 0.5 * cAx)));
+          dr += (WAVE_BASE + 0.02 - dr) * initW;
+          dotCrest += (f0 * f0 - dotCrest) * initW;
+          dotAlpha += (0.6 + 0.4 * f0 - dotAlpha) * initW;
+          dotForm += (f0 - dotForm) * initW;
+        }
+        if (attW > 0) {
+          const fa =
+            0.5 - 0.5 * Math.cos(TAU * (cycleA + dirA * (0.5 - 0.5 * cAx)));
+          // Floors, not ranges from zero. Attuning's shell never fully
+          // disperses — form bottoms out at 0.45 and alpha at 0.72 — because a
+          // state that is on screen indefinitely cannot afford to look like it
+          // is rebuilding itself. It breathes between mostly-there and there.
+          dotForm += (0.45 + 0.55 * fa - dotForm) * attW;
+          dotCrest += (0.55 * fa * fa - dotCrest) * attW;
+          dotAlpha += (0.72 + 0.28 * fa - dotAlpha) * attW;
+        }
+      }
       if (hiving) {
         // Angular distance from the origin, as `1 - cos` — a dot product, no
         // trig. Measured on the PRE-shear vector deliberately: the shear twists
@@ -934,9 +1074,12 @@ export function buildVoice(
         dr += drAdd;
         dotCrest += crestAdd;
       }
-      if (scattered) {
+      // `dotForm`, and a condition widened to match it: the sweep can leave a
+      // dot part-way out even when the RING's form is 1, so testing the ring
+      // value alone would skip exactly the dots the sweep is acting on.
+      if (scattered || dotForm < 0.999) {
         const sc = s.scatter[base + lj];
-        dr = sc + (dr - sc) * form;
+        dr = sc + (dr - sc) * dotForm;
       }
       if (dr > RF_CEILING) dr = RF_CEILING;
       const rr = R * dr;
@@ -958,9 +1101,9 @@ export function buildVoice(
       zs[j] = dz * rr;
       // The family coupling: a crest makes a dot bigger AND darker at the
       // same instant. Never one without the other.
-      brs[j] = (rBase + rDepth * depth) * (1 + 0.4 * dotCrest) * rs;
+      brs[j] = (rBase + rDepth * depth) * (1 + 0.4 * dotCrest) * rsDot;
       bws[j] = inkFar - inkSpan * depth - 0.1 * dotCrest;
-      bas[j] = alpha;
+      bas[j] = dotAlpha;
     }
   }
 }

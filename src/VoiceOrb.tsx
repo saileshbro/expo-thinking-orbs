@@ -23,6 +23,7 @@ import {
   VOICE_INITIALIZING,
   VOICE_LISTENING,
   VOICE_SPEAKING,
+  VOICE_ATTUNING,
   VOICE_THINKING,
   type VoiceBehaviour,
 } from './engine/voice';
@@ -43,7 +44,8 @@ export type VoiceOrbState =
   | 'idle'
   | 'listening'
   | 'thinking'
-  | 'speaking';
+  | 'speaking'
+  | 'attuning';
 
 /**
  * How each lifecycle state is drawn. Every state a user can actually sit
@@ -64,6 +66,7 @@ export const VOICE_STATE_TO_BEHAVIOUR: Record<VoiceOrbState, VoiceBehaviour> = {
   'listening': VOICE_LISTENING,
   'thinking': VOICE_THINKING,
   'speaking': VOICE_SPEAKING,
+  'attuning': VOICE_ATTUNING,
 };
 
 /**
@@ -87,6 +90,10 @@ const VOICE_LABELS: Record<VoiceOrbState, string> = {
   'listening': 'Listening…',
   'thinking': 'Thinking…',
   'speaking': 'Speaking…',
+  // No ellipsis, and not "Listening": attuning is not waiting for a turn, it
+  // is simply present and attentive. "Ready" is idle's, and idle is the
+  // stiller of the two.
+  'attuning': 'Attentive',
 };
 
 export interface VoiceOrbProps extends Omit<

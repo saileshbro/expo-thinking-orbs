@@ -98,13 +98,34 @@ const PRESETS: Record<StateModeKey, Record<OrbSize, Preset>> = {
 };
 
 /**
- * The voice shell. ONE row per design size, shared by all five voice
+ * The voice shell. ONE row per design size, shared by all nine voice
  * behaviours — deliberately, not for brevity: blending two behaviours
  * requires them to agree on the dot set, so the profile has to be
  * identical across states. What differs between voice states lives in the
- * behaviour, not here.
+ * behaviour, not here — `attuning` is the proof: it is a ninth behaviour and it
+ * did not move a single number in this table.
  */
 const VOICE_PRESETS: Record<OrbSize, Preset> = {
+  // 0.58 is a MEASURED ceiling, and the measurement is the only reason to trust
+  // it — a denser shell was tried, shipped to a device, and profiled off it.
+  //
+  // Instruments, Time Profiler, release build on an iPhone 16 Pro Max (iOS 26.6),
+  // 12s attached to the running app with the orb on screen at `attuning`:
+  //
+  //     count   dots    main thread   of which JS/worklets   display
+  //     2.32    1,062   6.11 ms/fr    3.26 ms/fr (53%)       89-120 fps
+  //     0.58      266   ~3.6 ms/fr    ~0.8 ms/fr             (target 120)
+  //
+  // The shape of that is the point. Skia drawing was 0.30 ms/frame — 5% — so the
+  // cost is not painting the dots, it is BUILDING them: `buildVoice` runs the
+  // whole lattice per frame as interpreted Hermes bytecode, and on iOS
+  // Reanimated's UI runtime is on the main thread, so that lands directly in the
+  // frame budget. Cost is ~linear in the dot count and nothing else moves it.
+  //
+  // The corollary, learned the expensive way: a SIMULATOR reading is not
+  // evidence here. The same shell measured 5.0 ms build+record on an iPhone 17
+  // Pro Max simulator and looked affordable, because that runs on a Mac's CPU.
+  // Only a release build on a phone answers this question.
   64: { speed: 1.0, count: 0.58, size: 1.05 },
   20: { speed: 0.95, count: 0.14, size: 1.7 },
 };
