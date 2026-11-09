@@ -11,7 +11,7 @@
 // are Skia colors (Float32Array RGBA, 0–1) so the painter never parses or
 // allocates a color per dot.
 
-import { Skia } from '@shopify/react-native-skia';
+import { Skia } from 'react-native-skia';
 
 /** 256 Skia colors (Float32Array RGBA), one per ink level. */
 export type ColorLUT = Float32Array[];

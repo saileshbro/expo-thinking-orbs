@@ -21,7 +21,7 @@ import {
   Picture,
   Text as SkText,
   vec,
-} from '@shopify/react-native-skia';
+} from 'react-native-skia';
 import {
   Easing,
   useDerivedValue,

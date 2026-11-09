@@ -54,7 +54,7 @@ dependencies. Install them with `expo install` so you get versions matched to
 your Expo SDK:
 
 ```sh
-npx expo install expo-thinking-orbs @shopify/react-native-skia react-native-reanimated react-native-worklets
+npx expo install expo-thinking-orbs react-native-skia react-native-reanimated react-native-worklets
 ```
 
 In a bare React Native project, install the same packages with your package
@@ -68,7 +68,7 @@ Babel plugin — `babel-preset-expo` adds it automatically on Expo).
 | --- | --- |
 | `react` | >= 19 |
 | `react-native` | >= 0.79 |
-| `@shopify/react-native-skia` | >= 2.0.0 |
+| `react-native-skia` | >= 2.15.0 |
 | `react-native-reanimated` | >= 4.0.0 |
 | `react-native-worklets` | >= 0.7.0 |
 
@@ -292,7 +292,7 @@ devices. For those screens, use the `useThinkingOrbPicture` hook and draw
 several orbs (plus any other animated Skia content) into **one** canvas:
 
 ```tsx
-import { Canvas, Group, Picture } from '@shopify/react-native-skia';
+import { Canvas, Group, Picture } from 'react-native-skia';
 import { useThinkingOrbPicture } from 'expo-thinking-orbs';
 
 function StatusRow() {

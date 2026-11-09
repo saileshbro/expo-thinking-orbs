@@ -9,7 +9,7 @@
 // so fewer, larger canvases render dramatically cheaper.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { SkPicture } from '@shopify/react-native-skia';
+import type { SkPicture } from 'react-native-skia';
 import {
   useDerivedValue,
   useFrameCallback,

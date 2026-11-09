@@ -8,8 +8,8 @@
 // reused structure-of-arrays buffer and are ordered through a reused
 // index list, so recording a frame allocates only the picture itself.
 
-import { Skia } from '@shopify/react-native-skia';
-import type { SkPaint, SkPicture, SkRect } from '@shopify/react-native-skia';
+import { Skia } from 'react-native-skia';
+import type { SkPaint, SkPicture, SkRect } from 'react-native-skia';
 import type { ColorLUT } from '../colors';
 import type { DotBuffer } from './scratch';
 

@@ -12,7 +12,7 @@
 // one, including the connection phases — so a session state passes straight
 // through. Other SDKs use a subset of the same words.
 
-import { Canvas, Picture } from '@shopify/react-native-skia';
+import { Canvas, Picture } from 'react-native-skia';
 import { View } from 'react-native';
 import type { SharedValue } from 'react-native-reanimated';
 import {

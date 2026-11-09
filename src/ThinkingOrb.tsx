@@ -8,7 +8,7 @@
 // is a separate native surface, and Android composits each per frame.
 
 import { View } from 'react-native';
-import { Canvas, Picture } from '@shopify/react-native-skia';
+import { Canvas, Picture } from 'react-native-skia';
 import { LABELS } from './theme';
 import type { ThinkingOrbProps } from './types';
 import { useThinkingOrbPicture } from './useThinkingOrbPicture';
